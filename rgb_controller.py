@@ -9,6 +9,7 @@ import paho.mqtt.client as mqtt
 import asyncio
 import json
 import random
+from datetime import datetime
 
 state_file = '/opt/mqtt_rgb/state.json'
 client_id='hallwaylight1'
@@ -36,6 +37,14 @@ class RGB():
     RED_PIN = 27
     GREEN_PIN = 17
     BLUE_PIN = 22
+
+    old_state = [0,0,0]
+    old_state2 = [0,0,0]
+    old_state3 = [0,0,0]
+
+    RED_MAX = 1.0
+    BLUE_MAX = 0.8
+    GREEN_MAX = 0.4
 
     def __init__(self, powered=False, start_color=[255,255,255], brightness=255):
 
@@ -88,7 +97,9 @@ class RGB():
         return f"{r},{g},{b}"
 
     def set_color(self, r, g, b):
-
+        self.old_state3 = self.old_state2
+        self.old_state2 = self.old_state
+        self.old_state = self.current_state
         self.current_state=[r,g,b]
         self.show_color()
         self.save_state()
@@ -102,9 +113,9 @@ class RGB():
                 r, g, b = [int((brightness/256)*c) for c in self.current_state]
             # print(f"Effective color: {r},{g},{b}")
 
-            self.gpio.set_PWM_dutycycle(self.RED_PIN, r)
-            self.gpio.set_PWM_dutycycle(self.GREEN_PIN, g)
-            self.gpio.set_PWM_dutycycle(self.BLUE_PIN, b)
+            self.gpio.set_PWM_dutycycle(self.RED_PIN, int(r * self.RED_MAX))
+            self.gpio.set_PWM_dutycycle(self.GREEN_PIN, int(g * self.GREEN_MAX))
+            self.gpio.set_PWM_dutycycle(self.BLUE_PIN, int(b * self.BLUE_MAX))
         
         else:
             self.gpio.set_PWM_dutycycle(self.RED_PIN, 0)
@@ -159,7 +170,7 @@ class RGB():
             b1 = int(b * (i / step))
             
             self.show_color([r1, g1, b1])
-
+            sleep(.01)
     def pulse_on(self, step=100):
 
         r, g, b = self.current_state
@@ -170,6 +181,7 @@ class RGB():
             b1 = int(b * (i / step))
             
             self.show_color([r1, g1, b1])
+            sleep(.01)
             
 
     def flash(self, t=1):
@@ -178,12 +190,83 @@ class RGB():
         self.power_on()
         sleep(t)
 
-    def pulse(self, step=100):
+    def pulse(self, step=100, reverse=False):
+        if reverse:
         
-        
-        self.pulse_off(step=step)
-        self.pulse_on(step=step)
+            self.pulse_off(step=step)
+            self.pulse_on(step=step)
+        else:
+            self.pulse_on(step=step)
+            self.pulse_off(step=step)
+            
 
+    def twofade(self, step=100):
+
+        color1 = self.current_state
+        color2 = self.old_state
+
+        self.go_to_color(end_rgb = color2, step=step)
+        self.go_to_color(end_rgb = color1, step=step)
+
+    
+    def party_mode(self, bpm=100):
+        t = datetime.now()
+        
+        step = 100
+            
+        modifier = .16
+
+        exp = modifier * 6
+
+        colors = [(255,255,255),
+                (255,0,0),
+                (0,255,0),
+                (0,0,255),
+                (255,255,0),
+                (0,255,255),
+                (255,0,255),
+                (192,192,192),
+                (128,128,128),
+                (128,0,0),
+                (128,128,0),
+                (0,128,0),
+                (128,0,128),
+                (0,128,128),
+                (0,0,128)]
+        r, g, b = random.choice(colors)
+        
+    
+
+        
+        for i in range(1, step + 1):
+            r1 = int(r * (i / step))
+            g1 = int(g * (i / step))
+            b1 = int(b * (i / step))
+            
+            self.show_color([r1, g1, b1])
+            sleep(modifier/step)
+
+        for i in range(step - 1, -1, -1):
+            r1 = int(r * (i / step))
+            g1 = int(g * (i / step))
+            b1 = int(b * (i / step))
+            
+            self.show_color([r1, g1, b1])
+            sleep(modifier/step)
+        
+
+        self.show_color([0,0,0])
+        sleep(modifier/2)
+        self.show_color([r, g, b])
+        sleep(modifier * 1.5)
+        self.show_color([0,0,0])
+        res = float(str(datetime.now() - t).split(':')[-1])
+        if res < exp:
+        
+            sleep(exp - res)
+        # res = datetime.now() - t
+        # print(f"{r}/{g}/{b}: {res.seconds}.{res.microseconds}")
+        
 
 def on_message(client, userdata, message):
     
@@ -212,7 +295,9 @@ def on_message(client, userdata, message):
             rgb.set_color(r, g, b)
         except Exception as e:
             print(e)
-        client.publish(rgb_state_topic, ",".join([r, g, b].encode()))
+        # pdb.set_trace()
+
+        client.publish(rgb_state_topic, f"{r},{g},{b}".encode())
 
     elif topic == effect_command_topic:
         cmd = message.payload.decode()
@@ -235,21 +320,28 @@ async def monitor_mqtt(rgb):
     
     client.username_pw_set(username=client_username, password=client_password)
     client.on_message = on_message
-    client.connect("192.168.1.211", 1883, 60)
-
-    client.publish(effect_state_topic, b'none')
+    connected = False
+    while connected != True:
+        try:
+            client.connect("192.168.1.211", 1883, 60)
+            connected = True
+            
+        except Exception as e:
+            print(f"Error: {e}. Retrying in 10 seconds")
+            await asyncio.sleep(10)
+    client.publish(effect_state_topic, rgb.active_effect.encode())
     client.publish(state_topic, b'ON')
-    client.publish(rgb_state_topic, b'255,255,255')
-    client.publish(brightness_state_topic, b'255')
+    client.publish(rgb_state_topic, rgb.get_color().encode())
+    client.publish(brightness_state_topic, str(rgb.brightness).encode())
     
     client.subscribe(brightness_command_topic)
     client.subscribe(command_topic)
     client.subscribe(effect_command_topic)
     client.subscribe(rgb_command_topic)
-    
-    client.loop_start()
-    await asyncio.sleep(5)
-    client.loop_stop()
+    while True:
+        client.loop_start()
+        await asyncio.sleep(5)
+        client.loop_stop()
 
 async def control_lights(rgb):
     while True:
@@ -268,6 +360,14 @@ async def control_lights(rgb):
             rgb.pulse(step=150)
         elif rgb.active_effect == "random_fade":
             rgb.go_to_color(step=200)
+        elif rgb.active_effect == "two_fade":
+            rgb.twofade(step=100)
+        elif rgb.active_effect == "two_fade_fast":
+            rgb.twofade(step=50)
+        elif rgb.active_effect == "two_fade_slow":
+            rgb.twofade(step=200)
+        elif rgb.active_effect == "party_mode":
+            rgb.party_mode(bpm=110)
 
 
         else:
